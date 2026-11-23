@@ -1,0 +1,5 @@
+.alternate-desk { display:grid; grid-template-columns:minmax(0,.85fr) minmax(215px,1fr); align-items:start; gap:1rem; }
+.consent-ticket { border-left:5px double var(--s-accent); padding:.55rem .7rem; margin-bottom:.6rem; background:var(--s-page); }
+.consent-ticket p { display:flex; flex-wrap:wrap; gap:.35rem; align-items:baseline; }
+.consent-ticket footer { margin-top:.45rem; font-size:.85rem; border-top:1px dashed var(--s-line); }
+@media(max-width:720px) { .alternate-desk { grid-template-columns:1fr; } }

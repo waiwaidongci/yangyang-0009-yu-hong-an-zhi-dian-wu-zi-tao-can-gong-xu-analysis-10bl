@@ -1,0 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+:root {
+  --s-page: oklch(94% .031 92);
+  --s-panel: oklch(97% .021 91);
+  --s-ink: oklch(28% .04 139);
+  --s-muted: oklch(45% .045 130);
+  --s-line: oklch(78% .052 104);
+  --s-accent: oklch(38% .079 137);
+  --s-onaccent: oklch(97% .021 91);
+  --s-error: oklch(38% .117 33);
+  --s-ok: oklch(39% .09 146);
+  --s-body: 'Noto Sans SC', sans-serif;
+  --s-display: 'Barlow Condensed', 'Noto Sans SC', sans-serif;
+}
+.depot-heading { display: grid; grid-template-columns: 1fr max-content; gap: 1rem; align-items: end; padding: 0 0 .85rem; border-bottom: 2px solid var(--s-accent); margin-bottom: 1.3rem; }
+.depot-heading h1 { font-size: clamp(1.9rem,4vw,3.65rem); margin: 0 0 .4rem; }
+.depot-heading p { margin: 0; color: var(--s-muted); }
+.incident-ribbon { display: grid; border-left: 4px solid var(--s-accent); padding: .4rem 0 .4rem .65rem; font-size: .87rem; }
+.depot-mono { font-family: var(--s-display); font-weight: 700; font-size: 1.03em; letter-spacing: .065em; }
+.intake-board { display: grid; grid-template-columns: minmax(260px, .86fr) minmax(0, 1.38fr); gap: 1rem; align-items: start; }
+.paper-sheet, .warehouse { border: 1px solid var(--s-line); background: var(--s-panel); padding: clamp(.9rem,2vw,1.6rem); }
+.paper-sheet h2, .warehouse h2 { margin-top: 0; border-bottom: 1px dashed var(--s-line); padding-bottom: .55rem; }
+.depot-queue, .goods-list { list-style: none; padding: 0; margin: 0; }
+.depot-queue li { border-bottom: 1px solid var(--s-line); }
+.depot-queue button.queue-button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: .6rem; background: transparent; border: 0; color: var(--s-ink); text-align: left; padding: .65rem .25rem; }
+button.queue-button[aria-pressed=true] { border-left: 3px solid var(--s-accent); padding-left: .6rem; background: var(--s-page); }
+.goods-list li { display: flex; justify-content: space-between; padding: .45rem 0; border-bottom: 1px solid var(--s-line); }
+.subdued, .joint-rule small { color: var(--s-muted); }
+.subdued { margin-top: .8rem; }
+.outlet .status-chip { white-space: nowrap; }
+.outlet .status-chip:is(.confirmed,.approved) { color: var(--s-ok); background: oklch(92% .045 145); }
+.outlet .status-chip:is(.submitted,.draft) { color: oklch(40% .061 65); background: oklch(92% .061 83); }
+.outlet .status-chip.shelved { color: var(--s-error); }
+.outlet form { display: grid; gap: .7rem; }
+.outlet form > button { justify-self: start; }
+.outlet [data-feedback]:empty { display: none; }
+.outlet [data-feedback] { margin: .7rem 0 0; }
+.depot-two { display: grid; gap: .55rem; grid-template-columns: 1fr 1fr; }
+.receipt-form { margin-top: .85rem; }
+.receipt-form summary { cursor: pointer; font-weight: 700; margin-bottom: .55rem; }
+.receipt-form fieldset { border: 1px solid var(--s-line); }
+.mining-bench { display: grid; grid-template-columns: minmax(200px,.48fr) minmax(0,1.4fr); gap: 1rem; align-items: start; }
+.threshold-panel form { margin-top: 1rem; }
+.rule-sheets { display: grid; gap: .65rem; }
+.joint-rule { border-left: 5px solid var(--s-accent); padding: .65rem .8rem; background: var(--s-page); }
+.joint-rule h3 { margin: 0; }
+.joint-rule h3 span { margin: 0 .3rem; }
+.joint-rule meter { display: block; width: min(420px,100%); height: 1.1rem; margin: .3rem 0; }
+.joint-rule meter::-webkit-meter-bar { background: var(--s-panel); border-color: var(--s-line); }
+.joint-rule meter::-webkit-meter-optimum-value { background: var(--s-accent); }
+.joint-rule a { display: block; width: max-content; margin-top: .45rem; }
+.packing-sheet { display: grid; grid-template-columns: minmax(0,1fr) minmax(240px,.76fr); gap: 1rem; align-items: start; }
+.package-components { display: flex; flex-wrap: wrap; gap: .9rem; }
+.crate-label { flex: 1 1 145px; min-width: 0; border: 2px solid var(--s-accent); border-left: 9px double var(--s-accent); background: oklch(90% .065 87); padding: .85rem; }
+.crate-label h2 { margin: .4rem 0; font-size: 1.3rem; }
+.crate-label small { font: 700 1rem var(--s-display); letter-spacing: .1em; }
+.crate-label p { margin: .5rem 0 0; }
+.packing-sheet label + form { margin-top: 1rem; }
+.warehouse { display: grid; gap: .2rem; }
+.warehouse table th { text-align: left; }
+.depot-overflow { overflow-x: auto; }
+.signoff { margin-top: 1rem; }
+@media(max-width: 790px) {
+  .depot-heading, .intake-board, .packing-sheet { grid-template-columns: 1fr; }
+}
+@media(max-width: 530px) {
+  .mining-bench { grid-template-columns: 1fr; }
+  .depot-queue button.queue-button { font-size: .83rem; }
+  .warehouse :is(th,td) { padding-inline: .3rem; }
+}
