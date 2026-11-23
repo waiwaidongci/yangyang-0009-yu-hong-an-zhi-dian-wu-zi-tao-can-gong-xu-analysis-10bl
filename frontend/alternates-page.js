@@ -3,8 +3,8 @@ import {itemOffer,matchedRuleOptions} from './consent-ticket.js';
 
 export async function alternatesPage(outlet,base,incident,user,redraw,ui) {
   const [offers,surveys,requests]=await Promise.all([api(base+'/alternates'),api(base+'/surveys'),api(base+'/requests')]);
-  const rules=surveys.surveys.flatMap(r=>r.pairs);
-  const pending=offers.filter(row=>!row.linked_slip);
+  const rules=surveys.surveys.filter(r=>r.status==='ready').flatMap(r=>r.pairs);
+  const pending=offers.filter(row=>!row.linked_slip && !row.revoked_reason);
   outlet.innerHTML=ui.heading('备选换品','从相同共需场次选择另一个搭配。只调换一个同箱规物资，保留原需求抵扣。',incident)
     +`<div class="alternate-desk"><section class="paper-sheet"><h2>替换确认簿</h2>
     ${offers.length ? offers.map(itemOffer).join('') : '<p>旧值班记录暂无换品。调拨前先核对配发意向和安置点回执。</p>'}</section>

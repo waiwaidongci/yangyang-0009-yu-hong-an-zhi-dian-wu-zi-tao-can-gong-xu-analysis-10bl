@@ -1,6 +1,8 @@
 from fastapi import HTTPException
+from psycopg.types.json import Jsonb
 
 from alternate_kits import requested_mapping
+from core import enqueue
 from eclat import overlap_pairs
 from lot_book import draw_lots
 from lot_selection import warehouse_day
@@ -34,8 +36,14 @@ def requests_for(cx, incident_id):
            JOIN shelter_requisitions r ON r.id=l.request_id
            WHERE r.response_id=%s ORDER BY i.id""", (incident_id,),
     ).fetchall()
+    corrections = cx.execute(
+        """SELECT c.* FROM requisition_corrections c
+           JOIN shelter_requisitions r ON r.id=c.request_id
+           WHERE r.response_id=%s ORDER BY c.id""", (incident_id,),
+    ).fetchall()
     for row in headers:
         row["lines"] = [item for item in goods if item["request_id"] == row["id"]]
+        row["corrections"] = [item for item in corrections if item["request_id"] == row["id"]]
     return headers
 
 
@@ -74,21 +82,26 @@ def confirm_request(cx, incident_id, request_id, email):
 def new_survey(cx, incident_id, support, lift):
     response_for(cx, incident_id, lock=True)
     samples = cx.execute(
-        "SELECT id FROM shelter_requisitions WHERE response_id=%s AND phase='confirmed' ORDER BY id",
+        "SELECT id,revision FROM shelter_requisitions WHERE response_id=%s AND phase='confirmed' ORDER BY id",
         (incident_id,),
     ).fetchall()
     if len(samples) < 4:
         raise HTTPException(409, "至少需要四个已审核安置点需求单")
+    revisions = {str(sample["id"]): sample["revision"] for sample in samples}
     return cx.execute(
-        """INSERT INTO co_demand_surveys(response_id,sample_ids,min_support_pct,min_lift)
-           VALUES (%s,%s,%s,%s) RETURNING *""",
-        (incident_id, [sample["id"] for sample in samples], support, lift),
+        """INSERT INTO co_demand_surveys(response_id,sample_ids,min_support_pct,min_lift,sample_revisions)
+           VALUES (%s,%s,%s,%s,%s) RETURNING *""",
+        (incident_id, [sample["id"] for sample in samples], support, lift, Jsonb(revisions)),
     ).fetchone()
 
 
 def survey_results(cx, incident_id):
-    runs = cx.execute("SELECT * FROM co_demand_surveys WHERE response_id=%s ORDER BY id DESC",
-                      (incident_id,)).fetchall()
+    runs = cx.execute(
+        """SELECT s.*,j.status AS job_status,j.error AS job_error
+           FROM co_demand_surveys s LEFT JOIN app_jobs j ON j.id=s.job_id
+           WHERE s.response_id=%s ORDER BY s.id DESC""",
+        (incident_id,),
+    ).fetchall()
     pairs = cx.execute(
         """
         SELECT p.*, a.sku AS sku_a, b.sku AS sku_b, a.name AS name_a, b.name AS name_b
@@ -102,12 +115,43 @@ def survey_results(cx, incident_id):
     return runs
 
 
+def sample_revisions(cx, sample_ids):
+    """Snapshot the correction revision of every frozen sample request."""
+    if not sample_ids:
+        return {}
+    rows = cx.execute(
+        "SELECT id,revision FROM shelter_requisitions WHERE id=ANY(%s)", (sample_ids,),
+    ).fetchall()
+    return {str(row["id"]): row["revision"] for row in rows}
+
+
+def _normalised_revisions(value):
+    return {str(key): int(number) for key, number in (value or {}).items()}
+
+
 def mine(cx, survey_id):
-    survey = cx.execute("SELECT * FROM co_demand_surveys WHERE id=%s FOR UPDATE", (survey_id,)).fetchone()
-    if survey is None:
+    # Serialise against corrections, which lock the response then rewrite samples.
+    existing = cx.execute("SELECT response_id FROM co_demand_surveys WHERE id=%s", (survey_id,)).fetchone()
+    if existing is None:
         raise HTTPException(404, "找不到已冻结的需求样本")
+    response_for(cx, existing["response_id"], lock=True)
+    survey = cx.execute("SELECT * FROM co_demand_surveys WHERE id=%s FOR UPDATE", (survey_id,)).fetchone()
+    if survey["status"] == "voided":
+        return {"survey_id": survey_id, "skipped": "场次已停用，不再启用该次结果"}
     if survey["status"] == "ready":
         return {"survey_id": survey_id, "sample_count": len(survey["sample_ids"])}
+    expected = _normalised_revisions(survey["sample_revisions"])
+    current = sample_revisions(cx, survey["sample_ids"])
+    if not expected:
+        # Legacy frozen run with no snapshot; adopt the revisions it is about to read.
+        cx.execute("UPDATE co_demand_surveys SET sample_revisions=%s WHERE id=%s",
+                   (Jsonb(current), survey_id))
+        expected = current
+    if expected != current:
+        # A newer correction landed after this run was frozen; keep it disabled.
+        reason = "样本已有更新更正，旧任务结果不再启用"
+        void_survey(cx, survey, None, reason, "system")
+        return {"survey_id": survey_id, "skipped": reason}
     rows = cx.execute("SELECT request_id,item_id FROM requisition_lines WHERE request_id=ANY(%s)",
                       (survey["sample_ids"],)).fetchall()
     baskets = {request: set() for request in survey["sample_ids"]}
@@ -123,6 +167,132 @@ def mine(cx, survey_id):
         )
     cx.execute("UPDATE co_demand_surveys SET status='ready' WHERE id=%s", (survey_id,))
     return {"survey_id": survey_id, "sample_count": len(baskets), "pairs": len(pairs)}
+
+
+def void_survey(cx, survey, correction_id, reason, email):
+    """Disable a frozen run while keeping its old result queryable."""
+    cx.execute(
+        """UPDATE co_demand_surveys
+           SET status='voided',voided_reason=%s,voided_at=now(),voided_correction=%s
+           WHERE id=%s""", (reason, correction_id, survey["id"]),
+    )
+    pair_ids = [row["id"] for row in cx.execute(
+        "SELECT id FROM co_demand_pairs WHERE survey_id=%s", (survey["id"],)).fetchall()]
+    if not pair_ids:
+        return []
+    voided = [row["id"] for row in cx.execute(
+        """UPDATE issue_slips
+           SET phase='voided',voided_reason=%s,voided_at=now(),disposition_by=%s,disposition_note=%s
+           WHERE phase='draft' AND pair_id=ANY(%s) RETURNING id""",
+        (reason, email, reason, pair_ids),
+    ).fetchall()]
+    # Replacement agreements from the old pair can no longer produce an outbound slip.
+    if voided:
+        cx.execute(
+            """UPDATE kit_replacements SET revoked_reason=%s,revoked_at=now()
+               WHERE revoked_reason IS NULL
+                 AND (wanted_pair=ANY(%s) OR alternate_pair=ANY(%s))
+                 AND (linked_slip IS NULL OR linked_slip=ANY(%s))""",
+            (reason, pair_ids, pair_ids, voided),
+        )
+    else:
+        cx.execute(
+            """UPDATE kit_replacements SET revoked_reason=%s,revoked_at=now()
+               WHERE revoked_reason IS NULL AND linked_slip IS NULL
+                 AND (wanted_pair=ANY(%s) OR alternate_pair=ANY(%s))""",
+            (reason, pair_ids, pair_ids),
+        )
+    return voided
+
+
+def replacement_survey(cx, survey, email):
+    """Create the run that repeats the voided survey at its original thresholds."""
+    revisions = sample_revisions(cx, survey["sample_ids"])
+    fresh = cx.execute(
+        """INSERT INTO co_demand_surveys(response_id,sample_ids,min_support_pct,min_lift,sample_revisions)
+           VALUES (%s,%s,%s,%s,%s) RETURNING *""",
+        (survey["response_id"], survey["sample_ids"], survey["min_support_pct"],
+         survey["min_lift"], Jsonb(revisions)),
+    ).fetchone()
+    cx.execute("UPDATE co_demand_surveys SET superseded_by=%s WHERE id=%s",
+               (fresh["id"], survey["id"]))
+    job_id = enqueue(cx, "mine_relief_pairs", {"survey_id": fresh["id"]})
+    return cx.execute("UPDATE co_demand_surveys SET job_id=%s WHERE id=%s RETURNING *",
+                      (job_id, fresh["id"])).fetchone()
+
+
+def correct_request(cx, incident_id, request_id, body, email):
+    """Reviewer rewrites a confirmed request's materials, keeping an audit trail."""
+    response_for(cx, incident_id, lock=True)
+    request = cx.execute(
+        "SELECT * FROM shelter_requisitions WHERE id=%s AND response_id=%s FOR UPDATE",
+        (request_id, incident_id),
+    ).fetchone()
+    if request is None:
+        raise HTTPException(404, "找不到本次响应的需求单")
+    if request["phase"] != "confirmed":
+        raise HTTPException(409, "只有已核需求单可以留更正记录")
+    items = {line["item_id"] for line in body["lines"]}
+    if len(items) != len(body["lines"]):
+        raise HTTPException(409, "同一需求单的物资不可重复")
+    if not items <= {item["id"] for item in inventory(cx, incident_id)}:
+        raise HTTPException(409, "需求物资须来自本次响应的库房目录")
+    previous = [{"item_id": line["item_id"], "units": line["units"]}
+                for line in cx.execute(
+                    "SELECT item_id,units FROM requisition_lines WHERE request_id=%s ORDER BY item_id",
+                    (request_id,)).fetchall()]
+    corrected = [{"item_id": line["item_id"], "units": line["units"]} for line in body["lines"]]
+    if previous == sorted(corrected, key=lambda line: line["item_id"]):
+        raise HTTPException(409, "更正后的物资与原件一致，无需留记录")
+    cx.execute("DELETE FROM requisition_lines WHERE request_id=%s", (request_id,))
+    with cx.cursor() as cursor:
+        cursor.executemany("INSERT INTO requisition_lines(request_id,item_id,units) VALUES (%s,%s,%s)",
+                           [(request_id, line["item_id"], line["units"]) for line in body["lines"]])
+    revision = cx.execute(
+        "UPDATE shelter_requisitions SET revision=revision+1 WHERE id=%s RETURNING revision",
+        (request_id,),
+    ).fetchone()["revision"]
+    correction = cx.execute(
+        """INSERT INTO requisition_corrections
+           (request_id,previous_lines,corrected_lines,reason,corrected_by)
+           VALUES (%s,%s,%s,%s,%s) RETURNING *""",
+        (request_id, Jsonb(previous), Jsonb(corrected), body["reason"], email),
+    ).fetchone()
+    reason = f"需求单 {request['slip']} 已更正，原搭配停用"
+    affected = cx.execute(
+        """SELECT * FROM co_demand_surveys
+           WHERE response_id=%s AND status IN ('queued','ready') AND %s=ANY(sample_ids)
+           ORDER BY id FOR UPDATE""", (incident_id, request_id),
+    ).fetchall()
+    disabled = []
+    replacements = []
+    for survey in affected:
+        void_survey(cx, survey, correction["id"], reason, email)
+        disabled.append(survey["id"])
+        replacements.append(replacement_survey(cx, survey, email)["id"])
+    return {**correction, "revision": revision,
+            "disabled_surveys": disabled, "replacement_surveys": replacements}
+
+
+def retry_survey(cx, incident_id, survey_id):
+    """Re-enqueue a run whose background job failed, keeping it disabled if voided."""
+    response_for(cx, incident_id, lock=True)
+    survey = cx.execute(
+        "SELECT * FROM co_demand_surveys WHERE id=%s AND response_id=%s FOR UPDATE",
+        (survey_id, incident_id),
+    ).fetchone()
+    if survey is None:
+        raise HTTPException(404, "找不到这次共需分析")
+    if survey["status"] == "voided":
+        raise HTTPException(409, "已停用的场次不能重试，请查看替代场次")
+    if survey["status"] == "ready":
+        raise HTTPException(409, "该场次已有结果，无需重试")
+    job = cx.execute("SELECT * FROM app_jobs WHERE id=%s", (survey["job_id"],)).fetchone()
+    if job and job["status"] in ("queued", "running"):
+        raise HTTPException(409, "该场次仍在计算，请稍后刷新")
+    job_id = enqueue(cx, "mine_relief_pairs", {"survey_id": survey_id})
+    return cx.execute("UPDATE co_demand_surveys SET job_id=%s WHERE id=%s RETURNING *",
+                      (job_id, survey_id)).fetchone()
 
 
 def pair_for(cx, incident_id, pair_id):

@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core import db, enqueue, require
-from dispatch import add_request, confirm_request, dispose, draft, inventory, mine, new_survey, requests_for, response_for, slips_for, survey_results
+from dispatch import (add_request, confirm_request, correct_request, dispose, draft, inventory, mine,
+                      new_survey, requests_for, response_for, retry_survey, slips_for, survey_results)
 
 from alternate_routes import router as alternate_router
 from handover_routes import router as handover_router
@@ -45,6 +46,11 @@ class Decision(BaseModel):
     note: str = Field(min_length=4, max_length=200)
 
 
+class Correction(BaseModel):
+    reason: str = Field(min_length=4, max_length=200)
+    lines: list[Line] = Field(min_length=1, max_length=30)
+
+
 @router.get("/flood-responses")
 def responses(_=Depends(any_role)):
     with db() as cx:
@@ -70,6 +76,12 @@ def confirm(incident: int, request_id: int, user=Depends(reviewer)):
         return confirm_request(cx, incident, request_id, user["email"])
 
 
+@router.post("/flood-responses/{incident}/requests/{request_id}/corrections")
+def correct(incident: int, request_id: int, body: Correction, user=Depends(reviewer)):
+    with db() as cx:
+        return correct_request(cx, incident, request_id, body.model_dump(), user["email"])
+
+
 @router.get("/flood-responses/{incident}/surveys")
 def surveys(incident: int, _=Depends(any_role)):
     with db() as cx:
@@ -80,7 +92,17 @@ def surveys(incident: int, _=Depends(any_role)):
 def launch_survey(incident: int, body: MiningRule, _=Depends(staff)):
     with db() as cx:
         row = new_survey(cx, incident, body.min_support_pct, body.min_lift)
-        return {"survey": row, "job_id": enqueue(cx, "mine_relief_pairs", {"survey_id": row["id"]})}
+        job_id = enqueue(cx, "mine_relief_pairs", {"survey_id": row["id"]})
+        row = cx.execute("UPDATE co_demand_surveys SET job_id=%s WHERE id=%s RETURNING *",
+                         (job_id, row["id"])).fetchone()
+        return {"survey": row, "job_id": job_id}
+
+
+@router.post("/flood-responses/{incident}/surveys/{survey_id}/retry", status_code=202)
+def retry(incident: int, survey_id: int, _=Depends(staff)):
+    with db() as cx:
+        row = retry_survey(cx, incident, survey_id)
+        return {"survey": row, "job_id": row["job_id"]}
 
 
 @router.get("/flood-responses/{incident}/issue-slips")

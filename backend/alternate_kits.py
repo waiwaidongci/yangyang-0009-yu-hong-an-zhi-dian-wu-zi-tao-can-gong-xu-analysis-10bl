@@ -36,6 +36,8 @@ def admit(cx,incident,item_id,consent,user):
     found=next((row for row in offers(cx,incident) if row["id"]==item_id),None)
     if not found or found["linked_slip"]:
         raise HTTPException(409,"仅待确认换品可登记安置点同意凭证")
+    if found["revoked_reason"]:
+        raise HTTPException(409,"原搭配已因需求更正停用，该换品同意不能再用于出库")
     pair=pair_for(cx,incident,found["alternate_pair"])
     a,b=pair["case_a"]*found["packs"],pair["case_b"]*found["packs"]
     mapping={found["replacement_item"]:found["donor_item"]}

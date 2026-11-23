@@ -32,6 +32,10 @@ button.queue-button[aria-pressed=true] { border-left: 3px solid var(--s-accent);
 .outlet .status-chip:is(.confirmed,.approved) { color: var(--s-ok); background: oklch(92% .045 145); }
 .outlet .status-chip:is(.submitted,.draft) { color: oklch(40% .061 65); background: oklch(92% .061 83); }
 .outlet .status-chip.shelved { color: var(--s-error); }
+.outlet .status-chip.voided { color: var(--s-muted); background: var(--s-page); text-decoration: line-through; }
+.joint-rule.stale { border-left-color: var(--s-muted); opacity: .72; }
+.joint-rule.stale h3 { text-decoration: line-through; }
+.consent-ticket.stale { opacity: .7; }
 .outlet form { display: grid; gap: .7rem; }
 .outlet form > button { justify-self: start; }
 .outlet [data-feedback]:empty { display: none; }

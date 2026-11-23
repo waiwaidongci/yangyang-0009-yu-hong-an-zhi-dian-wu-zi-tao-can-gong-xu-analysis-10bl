@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS shelter_requisitions (
     households integer NOT NULL CHECK (households BETWEEN 1 AND 600),
     phase text NOT NULL CHECK (phase IN ('submitted','confirmed')) DEFAULT 'submitted',
     confirm_by text,
+    revision bigint NOT NULL DEFAULT 0,
     UNIQUE(response_id,slip),
     CHECK ((phase = 'confirmed') = (confirm_by IS NOT NULL))
 );
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS co_demand_surveys (
     sample_ids bigint[] NOT NULL CHECK (cardinality(sample_ids) >= 4),
     min_support_pct integer NOT NULL CHECK (min_support_pct BETWEEN 1 AND 100),
     min_lift numeric(5,2) NOT NULL CHECK (min_lift BETWEEN 1 AND 25),
-    status text NOT NULL CHECK (status IN ('queued','ready')) DEFAULT 'queued'
+    status text NOT NULL CHECK (status IN ('queued','ready','voided')) DEFAULT 'queued'
 );
 
 CREATE TABLE IF NOT EXISTS co_demand_pairs (
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS issue_slips (
     packs integer NOT NULL CHECK (packs BETWEEN 1 AND 200),
     units_a integer NOT NULL CHECK (units_a > 0),
     units_b integer NOT NULL CHECK (units_b > 0),
-    phase text NOT NULL CHECK (phase IN ('draft','approved','shelved')) DEFAULT 'draft',
+    phase text NOT NULL CHECK (phase IN ('draft','approved','shelved','voided')) DEFAULT 'draft',
     opened_by text NOT NULL,
     disposition_by text,
     disposition_note text,

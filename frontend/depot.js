@@ -6,8 +6,8 @@ import {shelterArrival} from './shelter-arrival.js';
 
 const pages = { requests: '安置点需求', overlap: '共需搭配', packing: '整箱筹备', dispatch: '出库复核', lots:'批次拣配', alternates:'备选换品', arrivals:'到点点收' };
 const requestPhase = { submitted: '待核单', confirmed: '已核单' };
-const slipPhase = { draft: '待复核', approved: '已出库', shelved: '已搁置' };
-const surveyPhase = { queued: '分析中', ready: '已出结果' };
+const slipPhase = { draft: '待复核', approved: '已出库', shelved: '已搁置', voided: '已停用' };
+const surveyPhase = { queued: '分析中', ready: '已出结果', voided: '已停用' };
 const state = { request: null, run: null, pair: null, slip: null };
 const responsePath = '/api/flood-responses';
 const percent = value => (value * 100).toFixed(0) + '%';
@@ -52,8 +52,16 @@ async function requestDesk(outlet, base, incident, user, redraw) {
       <section class="paper-sheet"><h2>${selected ? h(selected.shelter) : '核单明细'}</h2>
       ${selected ? `<p>${h(selected.slip)} · 覆盖 ${selected.households} 户 · ${badge(requestPhase[selected.phase],selected.phase)}</p>
       <ul class="goods-list">${selected.lines.map(line => `<li><span>${h(line.name)}</span><strong>${line.units} 件</strong></li>`).join('')}</ul>
-      ${selected.phase === 'confirmed' ? `<p class="subdued">核单人 ${h(selected.confirm_by)}</p>`
+      ${selected.phase === 'confirmed' ? `<p class="subdued">核单人 ${h(selected.confirm_by)} · 更正 ${selected.revision} 次</p>`
        : user.role === 'reviewer' ? '<button id="confirm" type="button">核对需求并确认</button>' : ''}
+      ${selected.phase === 'confirmed' && user.role === 'reviewer' ? `<details class="receipt-form"><summary>更正已核物资</summary><form id="correction-form">
+        <p class="subdued">更正会即时停用含本单的共需场次，草案与换品同意随之失效。</p>
+        <fieldset><legend>更正后申报件数</legend><div class="depot-two">${stock.map(item => { const line = selected.lines.find(row => row.item_id === item.id);
+          return `<label>${h(item.name)}<input name="qty-${item.id}" type="number" min="0" max="3600" value="${line ? line.units : 0}"></label>`; }).join('')}</div></fieldset>
+        <label>更正原因<input name="reason" minlength="4" maxlength="200" required placeholder="来电更正覆盖户数与物资"></label>
+        <button type="submit">保存更正并重算共需</button></form></details>` : ''}
+      ${selected.corrections?.length ? `<details class="receipt-form"><summary>更正记录（${selected.corrections.length}）</summary>
+        <ol class="depot-queue">${selected.corrections.map(row => `<li><span>${h(row.reason)}</span><small>${h(row.corrected_by)} · ${h(row.created_at)}</small></li>`).join('')}</ol></details>` : ''}
       ` : '<p>选中现场来单后核查申报件数。</p>'}
       ${user.role === 'operator' ? `<details class="receipt-form"><summary>录入安置点来单</summary><form id="request-form">
         <div class="depot-two"><label>来单号<input name="slip" pattern="[A-Z0-9-]{3,28}" required placeholder="RV-W09"></label><label>覆盖户数<input name="households" type="number" min="1" max="600" required></label></div>
@@ -63,6 +71,11 @@ async function requestDesk(outlet, base, incident, user, redraw) {
       <p role="status" data-feedback></p></section></div>`;
   selectRows(outlet, 'request', redraw);
   action(outlet, '#confirm', () => api(base + '/requests/' + selected.id + '/confirm', 'POST'), redraw);
+  action(outlet, '#correction-form', async form => {
+    const lines = stock.map(item => ({item_id:item.id, units:Number(form.get('qty-' + item.id))})).filter(line => line.units > 0);
+    if (!lines.length) throw Error('至少填写一种物资的申报件数。');
+    await api(base + '/requests/' + selected.id + '/corrections', 'POST', {reason:form.get('reason'), lines});
+  }, redraw);
   action(outlet, '#request-form', async form => {
     const lines = stock.map(item => ({item_id:item.id, units:Number(form.get('qty-' + item.id))})).filter(line => line.units > 0);
     if (!lines.length) throw Error('至少填写一种物资的申报件数。');
@@ -85,7 +98,14 @@ async function overlapView(outlet, base, incident, user, redraw) {
          <button type="submit">冻结样本并分析</button></form>` : ''}
        <p role="status" data-feedback></p></aside>
        <section class="paper-sheet"><h2>成对共需</h2>
-       ${run?.status === 'ready' ? `<p>样本 ${run.sample_ids.length} 单 · 共同出现率至少 ${run.min_support_pct}% · 提升度至少 ${run.min_lift}</p>
+       ${run?.status === 'voided' ? `<p class="subdued">此场次已停用：${h(run.voided_reason)}</p>
+         <p>停用时间 ${h(run.voided_at)}${run.superseded_by ? ` · 新结果见第 ${run.superseded_by} 次分析 <button type="button" class="quiet" id="view-replacement" data-survey="${run.superseded_by}">查看</button>` : ''}</p>
+         ${run.pairs.length ? `<h3 class="subdued">停用前的旧结果（仅供查阅）</h3><div class="rule-sheets">${run.pairs.map(pair => `<article class="joint-rule stale">
+           <h3>${h(pair.name_a)} <span>＋</span> ${h(pair.name_b)}</h3>
+           <p>共 ${pair.intersection} 单 · 支持度 ${percent(pair.support)} · 提升度 ${pair.lift.toFixed(2)}</p>
+           <small>旧搭配已停用，不可用于新的整箱筹备。</small></article>`).join('')}</div>`
+           : empty('此场次停用前没有成对共需结果。')}`
+        : run?.status === 'ready' ? `<p>样本 ${run.sample_ids.length} 单 · 共同出现率至少 ${run.min_support_pct}% · 提升度至少 ${run.min_lift}</p>
          ${run.pairs.length ? `<div class="rule-sheets">${run.pairs.map(pair => `<article class="joint-rule">
            <h3>${h(pair.name_a)} <span>＋</span> ${h(pair.name_b)}</h3>
            <meter min="0" max="${run.sample_ids.length}" value="${pair.intersection}" aria-label="共同出现次数"></meter>
@@ -93,11 +113,21 @@ async function overlapView(outlet, base, incident, user, redraw) {
            <small>从 ${h(pair.name_a)} 到 ${h(pair.name_b)} ${percent(pair.conf_ab)} · 反向 ${percent(pair.conf_ba)}</small>
            <a href="#packing" data-pair="${pair.id}">查看整箱筹备</a></article>`).join('')}</div>`
            : empty('当前门槛下未找到成对共需。可核对样本或降低门槛后重新分析。')}`
-        : empty(run ? '后台正在计算，此次样本已冻结。' : '生成分析后可查看支持度与方向置信度。')}
-        ${run?.status === 'queued' ? '<button type="button" id="refresh-survey">刷新状态</button>' : ''}</section></div>`;
+        : empty(run ? (run.job_status === 'failed' ? '后台计算失败。可按原门槛重试。' : '后台正在计算，此次样本已冻结。')
+                    : '生成分析后可查看支持度与方向置信度。')}
+        ${run?.status === 'queued' ? '<button type="button" id="refresh-survey">刷新状态</button>' : ''}
+        ${run && run.job_status === 'failed' ? `<p class="subdued">${h(run.job_error)}</p><button type="button" id="retry-survey">按原门槛重试</button>` : ''}</section></div>`;
   outlet.querySelector('#survey-choice')?.addEventListener('change', event => { state.run = Number(event.target.value); redraw(); });
+  outlet.querySelector('#view-replacement')?.addEventListener('click', event => {
+    state.run = Number(event.currentTarget.dataset.survey); redraw();
+  });
   for (const link of outlet.querySelectorAll('[data-pair]')) link.onclick = () => { state.pair = Number(link.dataset.pair); };
   action(outlet, '#refresh-survey', () => {}, redraw);
+  action(outlet, '#retry-survey', async () => {
+    const {job_id} = await api(base + '/surveys/' + run.id + '/retry', 'POST');
+    notice(outlet.querySelector('[data-feedback]'), '已按原门槛重新排队。');
+    await waitJob(job_id);
+  }, redraw);
   action(outlet, '#survey-form', async form => {
     const {survey, job_id} = await api(base + '/surveys', 'POST', {
       min_support_pct:Number(form.get('min_support_pct')), min_lift:Number(form.get('min_lift')),
@@ -110,7 +140,7 @@ async function overlapView(outlet, base, incident, user, redraw) {
 
 async function packingDesk(outlet, base, incident, user, redraw) {
   const [inventory, results] = await Promise.all([api(base + '/requests'), api(base + '/surveys')]);
-  const ruleRows = results.surveys.flatMap(survey => survey.pairs);
+  const ruleRows = results.surveys.filter(survey => survey.status === 'ready').flatMap(survey => survey.pairs);
   const chosen = ruleRows.find(row => row.id === state.pair) ?? ruleRows[0];
   const details = chosen ? [chosen.id_a, chosen.id_b].map(id => inventory.stock.find(row => row.id === id)) : [];
   const narrowed = chosen ? inventory.requests.filter(row => row.phase === 'confirmed' &&
@@ -155,7 +185,8 @@ async function dispatchDesk(outlet, base, incident, user, redraw) {
         : empty('先在整箱筹备中起草配发单。')}</section>
       <section class="paper-sheet"><h2>${selected ? h(selected.shelter) : '出库明细'}</h2>
       ${selected ? `<p>${selected.packs} 套 · ${h(selected.name_a)} ${selected.units_a} 件 · ${h(selected.name_b)} ${selected.units_b} 件</p>
-        ${selected.phase !== 'draft' ? `<p>经办人 ${h(selected.disposition_by)} · ${h(selected.disposition_note)}</p>`
+        ${selected.phase === 'voided' ? `<p class="subdued">因需求更正停用：${h(selected.voided_reason)} · ${h(selected.voided_at)}</p>`
+         : selected.phase !== 'draft' ? `<p>经办人 ${h(selected.disposition_by)} · ${h(selected.disposition_note)}</p>`
         : user.role !== 'viewer' ? `<form id="disposition">
           <label>复核或搁置说明<input name="note" minlength="4" required placeholder="按 16 户优先配发"></label><label>处理<select name="kind">
             ${user.role === 'reviewer' ? '<option value="approve">批准出库</option>' : ''}<option value="shelve">搁置草案</option>
